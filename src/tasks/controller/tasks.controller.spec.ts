@@ -95,7 +95,7 @@ describe('TasksController', () => {
   });
 
   it('propagates NotFoundException from the service', async () => {
-    service.findOne.mockRejectedValue(new NotFoundException());
+    service.findOne.mockRejectedValue(new NotFoundException() as never);
 
     await expect(controller.findOne(TASK_ID)).rejects.toThrow(
       NotFoundException,

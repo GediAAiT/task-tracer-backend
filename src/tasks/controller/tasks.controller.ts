@@ -78,6 +78,6 @@ export class TasksController {
   @ApiNoContentResponse()
   @ApiNotFoundResponse({ type: ErrorResponseDto })
   async remove(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
-    return this.tasksService.remove(id);
+    await this.tasksService.remove(id);
   }
 }

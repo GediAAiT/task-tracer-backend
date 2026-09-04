@@ -14,6 +14,7 @@ const PRIORITY_RANK: Record<TaskPriority, number> = {
   [TaskPriority.URGENT]: 3,
 };
 
+
 const NO_DUE_DATE = Number.MAX_SAFE_INTEGER;
 
 @Injectable()
@@ -87,7 +88,8 @@ export class TasksService {
       patch.completedAt =
         dto.status === TaskStatus.DONE ? new Date().toISOString() : null;
     }
-    
+
+
     return (await this.repository.update(id, patch)) as Task;
   }
 
@@ -179,7 +181,7 @@ function comparator(sortBy: TaskSortBy, sortOrder: SortOrder) {
         const left = a.dueDate ? new Date(a.dueDate).getTime() : NO_DUE_DATE;
         const right = b.dueDate ? new Date(b.dueDate).getTime() : NO_DUE_DATE;
         if (left === right) result = 0;
-        // Undated tasks stay at the end rather than flipping with the direction.
+
         else if (left === NO_DUE_DATE) return 1;
         else if (right === NO_DUE_DATE) return -1;
         else result = left - right;
@@ -192,7 +194,7 @@ function comparator(sortBy: TaskSortBy, sortOrder: SortOrder) {
         result = Date.parse(a.createdAt) - Date.parse(b.createdAt);
     }
 
-    // Ties fall back to id so pagination stays stable across requests.
+
     return (result || a.id.localeCompare(b.id)) * direction;
   };
 }

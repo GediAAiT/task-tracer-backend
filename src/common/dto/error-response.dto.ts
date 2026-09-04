@@ -1,6 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
 
-/** Shape produced by Nest's built-in HTTP exception filter. */
 export class ErrorResponseDto {
   @ApiProperty()
   statusCode: number;

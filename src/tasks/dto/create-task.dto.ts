@@ -19,7 +19,6 @@ export class CreateTaskDto {
     maxLength: 200,
   })
   @IsString()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @MinLength(1)
   @MaxLength(200)
   title: string;

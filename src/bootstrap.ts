@@ -3,7 +3,6 @@ import { DocumentBuilder, OpenAPIObject, SwaggerModule } from '@nestjs/swagger';
 
 export const SWAGGER_PATH = 'api/docs';
 
-/** Where the server binds; `PORT` overrides the local default. */
 export function resolvePort(): number {
   return Number(process.env.PORT ?? 3000);
 }
@@ -33,8 +32,8 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
       ].join('\n'),
     )
     .setVersion('1.0.0')
-    .addTag('tasks')
-    .addTag('service')
+    .addTag('tasks', 'Create, read, update and delete tasks')
+    .addTag('service', 'Service info and health')
     .addServer('http://localhost:3000', 'Local development')
     .build();
 

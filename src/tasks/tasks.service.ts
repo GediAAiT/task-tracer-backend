@@ -14,7 +14,6 @@ const PRIORITY_RANK: Record<TaskPriority, number> = {
   [TaskPriority.URGENT]: 3,
 };
 
-
 const NO_DUE_DATE = Number.MAX_SAFE_INTEGER;
 
 @Injectable()

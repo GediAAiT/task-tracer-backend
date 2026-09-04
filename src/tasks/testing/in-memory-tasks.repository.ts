@@ -3,11 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { Task } from '../entities/task.entity';
 import { NewTask } from '../tasks.repository';
 
-/**
- * Drop-in replacement for `TasksRepository` backed by a `Map` instead of
- * Postgres. Used to unit test `TasksService` without a database — same
- * method surface, so it can be provided in place of the real repository.
- */
 @Injectable()
 export class InMemoryTasksRepository {
   private readonly tasks = new Map<string, Task>();

@@ -9,11 +9,7 @@ import { TaskOrmEntity } from '../tasks/entities/task.orm-entity';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
-        /*
-         * `pg` treats an empty-string password as absent and substitutes null,
-         * which fails SCRAM auth with a misleading "password must be a string".
-         * Fail here instead, while the cause is still obvious.
-         */
+
         const password = config.get<string>('DB_PASSWORD');
         if (!password) {
           throw new Error(

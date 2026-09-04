@@ -32,8 +32,8 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
       ].join('\n'),
     )
     .setVersion('1.0.0')
-    .addTag('tasks', 'Create, read, update and delete tasks')
-    .addTag('service', 'Service info and health')
+    .addTag('tasks')
+    .addTag('service')
     .addServer('http://localhost:3000', 'Local development')
     .build();
 

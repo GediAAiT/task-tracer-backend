@@ -14,7 +14,6 @@ const PRIORITY_RANK: Record<TaskPriority, number> = {
   [TaskPriority.URGENT]: 3,
 };
 
-/** Tasks with no due date sort last, whichever direction is asked for. */
 const NO_DUE_DATE = Number.MAX_SAFE_INTEGER;
 
 @Injectable()
@@ -88,8 +87,7 @@ export class TasksService {
       patch.completedAt =
         dto.status === TaskStatus.DONE ? new Date().toISOString() : null;
     }
-
-    // findOne above already proved the task exists.
+    
     return (await this.repository.update(id, patch)) as Task;
   }
 

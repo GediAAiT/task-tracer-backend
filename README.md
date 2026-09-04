@@ -23,67 +23,133 @@
 
 ## Description
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+**Task Tracer** — a task tracking REST API built with [NestJS](https://github.com/nestjs/nest), documented with
+OpenAPI/Swagger and covered by Jest unit and e2e tests.
+
+Tasks are persisted in PostgreSQL via [`TasksRepository`](src/tasks/tasks.repository.ts) (TypeORM under the
+hood). The service depends only on that class's methods, so the backing store can be swapped again by
+reimplementing it — unit tests do exactly that, running against an in-memory fake
+([`InMemoryTasksRepository`](src/tasks/testing/in-memory-tasks.repository.ts)) instead of a real database.
 
 ## Project setup
 
 ```bash
-$ npm install
+npm install
 ```
+
+Copy `.env.example` to `.env` and point it at a PostgreSQL 18 instance:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DB_HOST` | `localhost` | Postgres host |
+| `DB_PORT` | `5432` | Postgres port |
+| `DB_USERNAME` | `postgres` | Postgres user |
+| `DB_PASSWORD` | — | Postgres password |
+| `DB_DATABASE` | `task_tracer_backend_db` | Database name — create it beforehand (`createdb task_tracer_backend_db`) |
+
+The `tasks` table (and its enum types) are created automatically on boot via TypeORM's `synchronize` option —
+no migration step needed for local development.
 
 ## Compile and run the project
 
 ```bash
 # development
-$ npm run start
+npm run start
 
 # watch mode
-$ npm run start:dev
+npm run start:dev
 
 # production mode
-$ npm run start:prod
+npm run build && npm run start:prod
+```
+
+The API listens on `http://localhost:3000` by default; set `PORT` to change it.
+
+## API documentation
+
+With the app running:
+
+| What | URL |
+| --- | --- |
+| Swagger UI | http://localhost:3000/api/docs |
+| OpenAPI JSON | http://localhost:3000/api/docs-json |
+| OpenAPI YAML | http://localhost:3000/api/docs-yaml |
+
+### Endpoints
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/tasks` | Create a task |
+| `GET` | `/tasks` | List tasks — filtered, sorted, paginated |
+| `GET` | `/tasks/stats` | Counts by status and priority, overdue count, completion rate |
+| `GET` | `/tasks/:id` | Fetch one task |
+| `PATCH` | `/tasks/:id` | Update the fields present in the body |
+| `DELETE` | `/tasks/:id` | Delete a task (`204`) |
+| `GET` | `/health` | Liveness probe |
+
+### The task model
+
+`status` is one of `TODO`, `IN_PROGRESS`, `BLOCKED`, `DONE` (default `TODO`); `priority` is one of `LOW`,
+`MEDIUM`, `HIGH`, `URGENT` (default `MEDIUM`). Only `title` is required on create. Tags are lowercased and
+de-duplicated. Moving a task to `DONE` stamps `completedAt`; moving it back out clears it again.
+
+### List query parameters
+
+All optional: `status`, `priority`, `assignee`, `tag`, `search` (title and description, case-insensitive),
+`overdue` (`true` keeps only past-due unfinished tasks), `page` (default `1`), `limit` (default `20`, max `100`),
+`sortBy` (`createdAt` | `updatedAt` | `dueDate` | `priority` | `title`), `sortOrder` (`asc` | `desc`).
+Responses carry `items` plus `meta` with `total`, `page`, `limit`, `totalPages`, `hasNextPage`, `hasPreviousPage`.
+
+Unknown body or query properties are rejected with `400` by the global `ValidationPipe`.
+
+### Try it
+
+```bash
+curl -X POST http://localhost:3000/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Ship the tracer API","priority":"HIGH","tags":["api"],"dueDate":"2026-09-30T17:00:00.000Z"}'
+```
+
+```bash
+curl "http://localhost:3000/tasks?status=TODO&sortBy=priority&sortOrder=desc&limit=10"
 ```
 
 ## Run tests
 
 ```bash
 # unit tests
-$ npm run test
+npm run test
 
-# e2e tests
-$ npm run test:e2e
+# e2e tests (real HTTP through the same pipeline as production; needs the
+# Postgres database from `.env` reachable — they read and write real rows)
+npm run test:e2e
 
 # test coverage
-$ npm run test:cov
+npm run test:cov
 ```
+
+Nest 12 ships as ESM, so the test scripts run Jest through
+`node --experimental-vm-modules` — that flag is what lets Jest `require` those ESM packages.
+
+The e2e specs build the app with [`configureApp`](src/bootstrap.ts), the same helper `main.ts` uses, so the
+validation pipe and CORS under test match what runs in production.
 
 ## Deployment
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm run build
+npm run start:prod
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+`build` runs `tsc -p tsconfig.build.json` straight to `dist/`; `start:prod` runs `node dist/main`. The server
+binds to `PORT` when it is set and falls back to 3000 — see [`resolvePort`](src/bootstrap.ts), which the
+OpenAPI `servers` entry reads too, so the documented URL always matches the port in use.
 
-## Observability
-
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
+See the [Nest deployment documentation](https://docs.nestjs.com/deployment) for production guidance.
 
 ## Resources
 
@@ -92,8 +158,6 @@ Check out a few resources that may come in handy when working with NestJS:
 - Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
 - For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
 - To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observer](https://observer.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
 - Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
 - Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
 - To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).

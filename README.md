@@ -43,12 +43,12 @@ Copy `.env.example` to `.env` and point it at a PostgreSQL 18 instance:
 cp .env.example .env
 ```
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `DB_HOST` | `localhost` | Postgres host |
-| `DB_PORT` | `5432` | Postgres port |
-| `DB_USERNAME` | `postgres` | Postgres user |
-| `DB_PASSWORD` | — | Postgres password |
+| Variable      | Default                  | Description                                                              |
+| ------------- | ------------------------ | ------------------------------------------------------------------------ |
+| `DB_HOST`     | `localhost`              | Postgres host                                                            |
+| `DB_PORT`     | `5432`                   | Postgres port                                                            |
+| `DB_USERNAME` | `postgres`               | Postgres user                                                            |
+| `DB_PASSWORD` | —                        | Postgres password                                                        |
 | `DB_DATABASE` | `task_tracer_backend_db` | Database name — create it beforehand (`createdb task_tracer_backend_db`) |
 
 The `tasks` table (and its enum types) are created automatically on boot via TypeORM's `synchronize` option —
@@ -73,23 +73,23 @@ The API listens on `http://localhost:3000` by default; set `PORT` to change it.
 
 With the app running:
 
-| What | URL |
-| --- | --- |
-| Swagger UI | http://localhost:3000/api/docs |
+| What         | URL                                 |
+| ------------ | ----------------------------------- |
+| Swagger UI   | http://localhost:3000/api/docs      |
 | OpenAPI JSON | http://localhost:3000/api/docs-json |
 | OpenAPI YAML | http://localhost:3000/api/docs-yaml |
 
 ### Endpoints
 
-| Method | Path | Description |
-| --- | --- | --- |
-| `POST` | `/tasks` | Create a task |
-| `GET` | `/tasks` | List tasks — filtered, sorted, paginated |
-| `GET` | `/tasks/stats` | Counts by status and priority, overdue count, completion rate |
-| `GET` | `/tasks/:id` | Fetch one task |
-| `PATCH` | `/tasks/:id` | Update the fields present in the body |
-| `DELETE` | `/tasks/:id` | Delete a task (`204`) |
-| `GET` | `/health` | Liveness probe |
+| Method   | Path           | Description                                                   |
+| -------- | -------------- | ------------------------------------------------------------- |
+| `POST`   | `/tasks`       | Create a task                                                 |
+| `GET`    | `/tasks`       | List tasks — filtered, sorted, paginated                      |
+| `GET`    | `/tasks/stats` | Counts by status and priority, overdue count, completion rate |
+| `GET`    | `/tasks/:id`   | Fetch one task                                                |
+| `PATCH`  | `/tasks/:id`   | Update the fields present in the body                         |
+| `DELETE` | `/tasks/:id`   | Delete a task (`204`)                                         |
+| `GET`    | `/health`      | Liveness probe                                                |
 
 ### The task model
 
@@ -122,14 +122,14 @@ curl "http://localhost:3000/tasks?status=TODO&sortBy=priority&sortOrder=desc&lim
 
 ```bash
 # unit tests
-npm run test
+npm run test OR pnpm test
 
 # e2e tests (real HTTP through the same pipeline as production; needs the
 # Postgres database from `.env` reachable — they read and write real rows)
-npm run test:e2e
+npm run test:e2e OR pnpm test:e2e
 
 # test coverage
-npm run test:cov
+npm run test:cov OR pnpm test:cov
 ```
 
 Nest 12 ships as ESM, so the test scripts run Jest through
@@ -176,4 +176,5 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+
 # task-tracer-backend

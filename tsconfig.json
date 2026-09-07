@@ -10,13 +10,9 @@
     "experimentalDecorators": true,
     "allowSyntheticDefaultImports": true,
     "target": "ES2023",
-    // Server-only code: leaving `dom`/`webworker` out of the default ES2023
-    // lib set keeps ~45k lines of irrelevant declarations out of every build.
     "lib": ["ES2023"],
     "types": ["node", "jest"],
     "sourceMap": true,
-    // Set to the repo root so `test/` compiles alongside `src/`; the build
-    // narrows it to ./src (see tsconfig.build.json) to keep dist/ flat.
     "rootDir": "./",
     "outDir": "./dist",
     "incremental": true,

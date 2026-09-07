@@ -1,0 +1,21 @@
+{
+  // The project compiles with TypeScript 6 (see devDependencies). VS Code
+  // ships its own older TypeScript and uses it by default, which reports
+  // phantom errors against this tsconfig. Pin the editor to the workspace
+  // compiler so red squiggles match `pnpm run build`.
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+
+  // pnpm installs into node_modules/.pnpm and symlinks the top level. Watching
+  // the store duplicates every file and slows resolution in the TS server.
+  "files.watcherExclude": {
+    "**/node_modules/.pnpm/**": true,
+    "**/dist/**": true,
+    "**/coverage/**": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/coverage": true
+  }
+}

@@ -13,7 +13,7 @@ import { TaskOrmEntity } from '../tasks/entities/task.orm-entity';
         const password = config.get<string>('DB_PASSWORD');
         if (!password) {
           throw new Error(
-            'DB_PASSWORD is not set. Copy .env.example to .env and set your PostgreSQL password.',
+            'DB_PASSWORD is not set. Set your PostgreSQL password in .env.',
           );
         }
 

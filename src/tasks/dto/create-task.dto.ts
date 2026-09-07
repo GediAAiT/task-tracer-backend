@@ -18,6 +18,10 @@ export class CreateTaskDto {
     minLength: 1,
     maxLength: 200,
   })
+  // Runs before validation, so a whitespace-only title collapses to '' and is
+  // rejected by MinLength rather than stored as blank. Non-strings pass through
+  // untouched so IsString still reports the type error.
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @MinLength(1)
   @MaxLength(200)

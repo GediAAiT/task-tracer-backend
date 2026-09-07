@@ -34,14 +34,10 @@ reimplementing it — unit tests do exactly that, running against an in-memory f
 ## Project setup
 
 ```bash
-npm install
+pnpm install
 ```
 
-Copy `.env.example` to `.env` and point it at a PostgreSQL 18 instance:
-
-```bash
-cp .env.example .env
-```
+Create a `.env` file and point it at a PostgreSQL 18 instance:
 
 | Variable      | Default                  | Description                                                              |
 | ------------- | ------------------------ | ------------------------------------------------------------------------ |
@@ -68,6 +64,37 @@ npm run build && npm run start:prod
 ```
 
 The API listens on `http://localhost:3000` by default; set `PORT` to change it.
+
+## Docker
+
+With `.env` in place (`DB_PASSWORD` must be set), bring up the API and PostgreSQL together:
+
+```bash
+docker compose up --build
+```
+
+Compose waits for Postgres' healthcheck before booting the API, which then creates the schema via TypeORM's
+`synchronize`. Data lives in the `postgres-data` volume and survives `docker compose down` (add `-v` to wipe it).
+
+The API container reads `.env` directly, but overrides `DB_HOST`/`DB_PORT` to reach Postgres over the compose
+network — so those two values in `.env` only apply when running outside Docker. Set `API_PORT` or
+`DB_PORT_HOST` in `.env` if 3000 or 5432 are already taken on your machine.
+
+```bash
+docker compose logs -f api      # follow the API logs
+docker compose exec postgres psql -U postgres task_tracer_backend_db
+docker compose down             # stop; add -v to also drop the database volume
+```
+
+To run just the image against a database you already have:
+
+```bash
+docker build -t task-tracer-backend .
+docker run --rm -p 3000:3000 --env-file .env task-tracer-backend
+```
+
+The build is multi-stage: dependencies and `tsc` run in builder stages, and the final image carries only
+`dist/`, production dependencies and `package.json`, running as the unprivileged `node` user.
 
 ## API documentation
 

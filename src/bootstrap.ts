@@ -1,5 +1,6 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, OpenAPIObject, SwaggerModule } from '@nestjs/swagger';
+import { CACHE_HEADERS } from './tasks/tasks.cache';
 
 export const SWAGGER_PATH = 'api/docs';
 
@@ -16,7 +17,10 @@ export function configureApp(app: INestApplication): INestApplication {
       transformOptions: { enableImplicitConversion: false },
     }),
   );
-  app.enableCors();
+  // Browsers hide every non-safelisted response header from scripts unless it
+  // is named here, so a direct (non-proxied) client could not read the cache
+  // status without this.
+  app.enableCors({ exposedHeaders: Object.values(CACHE_HEADERS) });
   return app;
 }
 

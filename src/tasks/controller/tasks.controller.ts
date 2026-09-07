@@ -10,7 +10,9 @@ import {
   Patch,
   Post,
   Query,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import {
   ApiBadRequestResponse,
   ApiCreatedResponse,
@@ -27,6 +29,7 @@ import { QueryTasksDto } from '../dto/query-tasks.dto';
 import { TaskStatsDto } from '../dto/task-stats.dto';
 import { UpdateTaskDto } from '../dto/update-task.dto';
 import { Task } from '../entities/task.entity';
+import { CACHE_HEADERS } from '../tasks.cache';
 import { TasksService } from '../tasks.service';
 
 @ApiTags('tasks')
@@ -42,9 +45,46 @@ export class TasksController {
   }
 
   @Get()
-  @ApiOkResponse({ type: PaginatedTasksDto })
-  async findAll(@Query() query: QueryTasksDto): Promise<PaginatedTasksDto> {
-    return this.tasksService.findAll(query);
+  @ApiOkResponse({
+    type: PaginatedTasksDto,
+    headers: {
+      [CACHE_HEADERS.status]: {
+        description: 'HIT, MISS, or BYPASS when Redis was unreachable',
+        schema: { type: 'string' },
+      },
+      [CACHE_HEADERS.age]: {
+        description: 'Seconds since the returned page was computed',
+        schema: { type: 'integer' },
+      },
+      [CACHE_HEADERS.key]: {
+        description: 'Redis key the page was read from or written to',
+        schema: { type: 'string' },
+      },
+      [CACHE_HEADERS.invalidation]: {
+        description: 'disabled when writes are not retiring cached pages',
+        schema: { type: 'string' },
+      },
+    },
+  })
+  async findAll(
+    @Query() query: QueryTasksDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<PaginatedTasksDto> {
+    const { page, cache } = await this.tasksService.findAllWithCacheInfo(query);
+
+    // A cached page and a fresh one look identical in the body, so the source
+    // is reported in headers rather than left for the client to guess.
+    response.setHeader(CACHE_HEADERS.status, cache.status);
+    response.setHeader(
+      CACHE_HEADERS.invalidation,
+      this.tasksService.cacheInvalidationEnabled ? 'enabled' : 'disabled',
+    );
+    if (cache.key !== null) response.setHeader(CACHE_HEADERS.key, cache.key);
+    if (cache.ageSeconds !== null) {
+      response.setHeader(CACHE_HEADERS.age, String(cache.ageSeconds));
+    }
+
+    return page;
   }
 
   @Get('stats')

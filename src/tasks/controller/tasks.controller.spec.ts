@@ -1,8 +1,11 @@
 import { NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import type { Response } from 'express';
 import { CreateTaskDto } from '../dto/create-task.dto';
+import { PaginatedTasksDto } from '../dto/paginated-tasks.dto';
 import { SortOrder, TaskSortBy } from '../dto/query-tasks.dto';
 import { Task, TaskPriority, TaskStatus } from '../entities/task.entity';
+import { CACHE_HEADERS } from '../tasks.cache';
 import { TasksController } from './tasks.controller';
 import { TasksService } from '../tasks.service';
 
@@ -22,6 +25,32 @@ const task: Task = {
   updatedAt: '2026-09-03T09:12:44.001Z',
 };
 
+const page: PaginatedTasksDto = {
+  items: [task],
+  meta: {
+    total: 1,
+    page: 1,
+    limit: 20,
+    totalPages: 1,
+    hasNextPage: false,
+    hasPreviousPage: false,
+  },
+};
+
+const CACHE_KEY = 'tasks:list:v3:limit=20&page=1';
+
+/** Records what the controller wrote, standing in for an express response. */
+function responseStub() {
+  const headers = new Map<string, string>();
+
+  return {
+    headers,
+    setHeader: jest.fn((name: string, value: string | number) => {
+      headers.set(name, String(value));
+    }),
+  };
+}
+
 describe('TasksController', () => {
   let controller: TasksController;
   let service: jest.Mocked<TasksService>;
@@ -29,17 +58,11 @@ describe('TasksController', () => {
   beforeEach(async () => {
     const serviceMock: Partial<jest.Mocked<TasksService>> = {
       create: jest.fn().mockResolvedValue(task),
-      findAll: jest.fn().mockResolvedValue({
-        items: [task],
-        meta: {
-          total: 1,
-          page: 1,
-          limit: 20,
-          totalPages: 1,
-          hasNextPage: false,
-          hasPreviousPage: false,
-        },
+      findAllWithCacheInfo: jest.fn().mockResolvedValue({
+        page,
+        cache: { status: 'HIT', key: CACHE_KEY, ageSeconds: 12 },
       }),
+      cacheInvalidationEnabled: true,
       findOne: jest.fn().mockResolvedValue(task),
       update: jest.fn().mockResolvedValue({ ...task, title: 'Renamed' }),
       remove: jest.fn().mockResolvedValue(undefined),
@@ -77,11 +100,54 @@ describe('TasksController', () => {
       sortOrder: SortOrder.ASC,
     };
 
-    const result = await controller.findAll(query);
+    const result = await controller.findAll(
+      query,
+      responseStub() as unknown as Response,
+    );
 
     expect(result.items).toEqual([task]);
     expect(result.meta.total).toBe(1);
-    expect(service.findAll).toHaveBeenCalledWith(query);
+    expect(service.findAllWithCacheInfo).toHaveBeenCalledWith(query);
+  });
+
+  it('reports the cache status, age and key of the page it served', async () => {
+    const response = responseStub();
+
+    await controller.findAll({}, response as unknown as Response);
+
+    expect(Object.fromEntries(response.headers)).toEqual({
+      [CACHE_HEADERS.status]: 'HIT',
+      [CACHE_HEADERS.age]: '12',
+      [CACHE_HEADERS.key]: CACHE_KEY,
+      [CACHE_HEADERS.invalidation]: 'enabled',
+    });
+  });
+
+  // A bypass has no key and no age: there is no cached copy to describe.
+  it('omits the key and age headers when the cache was bypassed', async () => {
+    service.findAllWithCacheInfo.mockResolvedValue({
+      page,
+      cache: { status: 'BYPASS', key: null, ageSeconds: null },
+    });
+    const response = responseStub();
+
+    await controller.findAll({}, response as unknown as Response);
+
+    expect(response.headers.get(CACHE_HEADERS.status)).toBe('BYPASS');
+    expect(response.headers.has(CACHE_HEADERS.key)).toBe(false);
+    expect(response.headers.has(CACHE_HEADERS.age)).toBe(false);
+  });
+
+  it('tells clients when invalidation is switched off', async () => {
+    Object.defineProperty(service, 'cacheInvalidationEnabled', {
+      value: false,
+      configurable: true,
+    });
+    const response = responseStub();
+
+    await controller.findAll({}, response as unknown as Response);
+
+    expect(response.headers.get(CACHE_HEADERS.invalidation)).toBe('disabled');
   });
 
   it('returns the stats summary', async () => {

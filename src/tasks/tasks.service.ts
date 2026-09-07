@@ -1,10 +1,28 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { CacheService } from '../redis/cache.service';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { PaginatedTasksDto } from './dto/paginated-tasks.dto';
 import { QueryTasksDto, SortOrder, TaskSortBy } from './dto/query-tasks.dto';
 import { TaskStatsDto } from './dto/task-stats.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
 import { Task, TaskPriority, TaskStatus } from './entities/task.entity';
+import {
+  ageInSeconds,
+  BREAK_INVALIDATION_ENV,
+  CachedListPage,
+  CachedListResult,
+  isCachedListPage,
+  isInvalidationBroken,
+  listCacheKey,
+  TASKS_LIST_TTL_SECONDS,
+  TASKS_LIST_VERSION_KEY,
+} from './tasks.cache';
 import { TasksRepository } from './tasks.repository';
 
 const PRIORITY_RANK: Record<TaskPriority, number> = {
@@ -18,12 +36,39 @@ const NO_DUE_DATE = Number.MAX_SAFE_INTEGER;
 
 @Injectable()
 export class TasksService {
-  constructor(private readonly repository: TasksRepository) {}
+  private readonly logger = new Logger(TasksService.name);
 
-  create(dto: CreateTaskDto): Promise<Task> {
+  private readonly invalidationEnabled: boolean;
+
+  constructor(
+    private readonly repository: TasksRepository,
+    private readonly cache: CacheService,
+    // Optional so unit tests can construct the service without a config
+    // module; absent config leaves the switch off, which is the safe default.
+    @Optional() config?: ConfigService,
+  ) {
+    this.invalidationEnabled = !isInvalidationBroken(
+      config?.get<string>(BREAK_INVALIDATION_ENV),
+    );
+
+    if (!this.invalidationEnabled) {
+      this.logger.warn(
+        `${BREAK_INVALIDATION_ENV} is set: writes will not retire cached list ` +
+          `pages, so GET /tasks can serve rows up to ` +
+          `${TASKS_LIST_TTL_SECONDS}s out of date.`,
+      );
+    }
+  }
+
+  /** Whether writes still retire cached pages. Reported to clients in a header. */
+  get cacheInvalidationEnabled(): boolean {
+    return this.invalidationEnabled;
+  }
+
+  async create(dto: CreateTaskDto): Promise<Task> {
     const status = dto.status ?? TaskStatus.TODO;
 
-    return this.repository.create({
+    const task = await this.repository.create({
       title: dto.title,
       description: dto.description ?? null,
       status,
@@ -33,9 +78,59 @@ export class TasksService {
       tags: normalizeTags(dto.tags),
       completedAt: status === TaskStatus.DONE ? new Date().toISOString() : null,
     });
+
+    await this.invalidateLists();
+
+    return task;
   }
 
   async findAll(query: QueryTasksDto = {}): Promise<PaginatedTasksDto> {
+    return (await this.findAllWithCacheInfo(query)).page;
+  }
+
+  /**
+   * findAll plus which source answered.
+   *
+   * The controller uses this one so it can tell clients whether they are
+   * looking at Redis or at the database; a cached page and a fresh page are
+   * otherwise indistinguishable.
+   */
+  async findAllWithCacheInfo(
+    query: QueryTasksDto = {},
+  ): Promise<CachedListResult> {
+    // undefined means Redis is unreachable: serve straight from the repository.
+    const version = await this.cache.version(TASKS_LIST_VERSION_KEY);
+    const cacheKey =
+      version === undefined ? undefined : listCacheKey(query, version);
+
+    if (cacheKey) {
+      const cached = await this.cache.get<unknown>(cacheKey);
+      if (isCachedListPage(cached)) {
+        return {
+          page: cached.page,
+          cache: {
+            status: 'HIT',
+            key: cacheKey,
+            ageSeconds: ageInSeconds(cached.cachedAt),
+          },
+        };
+      }
+    }
+
+    const page = this.computePage(await this.repository.findAll(), query);
+
+    if (!cacheKey) {
+      return { page, cache: { status: 'BYPASS', key: null, ageSeconds: null } };
+    }
+
+    const entry: CachedListPage = { cachedAt: Date.now(), page };
+    await this.cache.set(cacheKey, entry, TASKS_LIST_TTL_SECONDS);
+
+    return { page, cache: { status: 'MISS', key: cacheKey, ageSeconds: 0 } };
+  }
+
+  /** Filters, sorts and slices in memory. Nothing to do with the cache. */
+  private computePage(tasks: Task[], query: QueryTasksDto): PaginatedTasksDto {
     const {
       page = 1,
       limit = 20,
@@ -43,9 +138,7 @@ export class TasksService {
       sortOrder = SortOrder.DESC,
     } = query;
 
-    const matched = (await this.repository.findAll()).filter((task) =>
-      matches(task, query),
-    );
+    const matched = tasks.filter((task) => matches(task, query));
     matched.sort(comparator(sortBy, sortOrder));
 
     const totalPages = Math.ceil(matched.length / limit);
@@ -89,13 +182,33 @@ export class TasksService {
     }
 
 
-    return (await this.repository.update(id, patch)) as Task;
+    const updated = (await this.repository.update(id, patch)) as Task;
+
+    await this.invalidateLists();
+
+    return updated;
   }
 
   async remove(id: string): Promise<void> {
     if (!(await this.repository.delete(id))) {
       throw new NotFoundException(`Task with id ${id} was not found`);
     }
+
+    await this.invalidateLists();
+  }
+
+  /** Removes every task, cache included. Test and fixture setup only. */
+  async clear(): Promise<void> {
+    await this.repository.clear();
+    // Bumps unconditionally, even with the break switch on: this is fixture
+    // setup, and a test inheriting the previous test's cached rows would fail
+    // for reasons unrelated to what it asserts.
+    await this.cache.bumpVersion(TASKS_LIST_VERSION_KEY);
+  }
+
+  private async invalidateLists(): Promise<void> {
+    if (!this.invalidationEnabled) return;
+    await this.cache.bumpVersion(TASKS_LIST_VERSION_KEY);
   }
 
   async getStats(): Promise<TaskStatsDto> {

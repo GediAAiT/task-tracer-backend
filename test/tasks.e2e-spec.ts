@@ -4,13 +4,13 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { TasksRepository } from '../src/tasks/tasks.repository';
+import { TasksService } from '../src/tasks/tasks.service';
 
 const MISSING_ID = '00000000-0000-4000-8000-000000000000';
 
 describe('Tasks (e2e)', () => {
   let app: INestApplication<App>;
-  let repository: TasksRepository;
+  let tasks: TasksService;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -20,7 +20,7 @@ describe('Tasks (e2e)', () => {
     app = configureApp(
       moduleFixture.createNestApplication(),
     ) as INestApplication<App>;
-    repository = app.get(TasksRepository);
+    tasks = app.get(TasksService);
     await app.init();
   });
 
@@ -29,7 +29,7 @@ describe('Tasks (e2e)', () => {
   });
 
   beforeEach(async () => {
-    await repository.clear();
+    await tasks.clear();
   });
 
   const createTask = (body: Record<string, unknown> = {}) =>

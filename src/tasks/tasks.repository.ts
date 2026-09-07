@@ -6,10 +6,6 @@ import { TaskOrmEntity } from './entities/task.orm-entity';
 
 export type NewTask = Omit<Task, 'id' | 'createdAt' | 'updatedAt'>;
 
-/**
- * Postgres-backed store. The service only depends on the methods below, so
- * the backing store can be swapped again by reimplementing this class.
- */
 @Injectable()
 export class TasksRepository {
   constructor(

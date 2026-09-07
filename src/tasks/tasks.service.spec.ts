@@ -1,8 +1,12 @@
 import { NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
+import { CacheService } from '../redis/cache.service';
+import { InMemoryCacheService } from '../redis/testing/in-memory-cache.service';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { SortOrder, TaskSortBy } from './dto/query-tasks.dto';
 import { TaskPriority, TaskStatus } from './entities/task.entity';
+import { BREAK_INVALIDATION_ENV } from './tasks.cache';
 import { InMemoryTasksRepository } from './testing/in-memory-tasks.repository';
 import { TasksRepository } from './tasks.repository';
 import { TasksService } from './tasks.service';
@@ -12,17 +16,24 @@ const MISSING_ID = '00000000-0000-4000-8000-000000000000';
 describe('TasksService', () => {
   let service: TasksService;
   let repository: TasksRepository;
+  let cache: InMemoryCacheService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TasksService,
         { provide: TasksRepository, useClass: InMemoryTasksRepository },
+        { provide: CacheService, useClass: InMemoryCacheService },
       ],
     }).compile();
 
     service = module.get(TasksService);
     repository = module.get(TasksRepository);
+    cache = module.get<InMemoryCacheService>(CacheService);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   const create = (dto: Partial<CreateTaskDto> = {}) =>
@@ -458,6 +469,136 @@ describe('TasksService', () => {
     });
   });
 
+  describe('list cache', () => {
+    it('serves a repeated identical query without recomputing it', async () => {
+      await create({ title: 'Cached' });
+      await service.findAll();
+      const writesAfterFirst = cache.writes;
+
+      await service.findAll();
+
+      expect(cache.writes).toBe(writesAfterFirst);
+    });
+
+    it('caches each distinct query separately', async () => {
+      await create({ title: 'Cached' });
+
+      await service.findAll();
+      await service.findAll({ page: 2 });
+      await service.findAll({ status: TaskStatus.TODO });
+
+      expect(new Set(pageKeys(cache)).size).toBe(3);
+    });
+
+    it('gives every cached page a TTL', async () => {
+      await create({ title: 'Cached' });
+      await service.findAll();
+      const [pageKey] = pageKeys(cache);
+
+      expect(cache.ttlOf(pageKey)).toBeGreaterThan(0);
+    });
+
+    it('reports a MISS with the key it wrote, then a HIT on the same query', async () => {
+      await create({ title: 'Cached' });
+
+      const miss = await service.findAllWithCacheInfo();
+      const hit = await service.findAllWithCacheInfo();
+
+      expect(miss.cache).toMatchObject({ status: 'MISS', ageSeconds: 0 });
+      expect(miss.cache.key).toMatch(/^tasks:list:v\d+:/);
+      expect(hit.cache).toMatchObject({ status: 'HIT', key: miss.cache.key });
+      expect(hit.page).toEqual(miss.page);
+    });
+
+    it('reports how old the snapshot it served is', async () => {
+      await create({ title: 'Cached' });
+      await service.findAllWithCacheInfo();
+      jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 45_000);
+
+      expect((await service.findAllWithCacheInfo()).cache.ageSeconds).toBe(45);
+    });
+
+    // Without a readable version counter the service cannot tell which
+    // generation a cached page belongs to, so it must not serve one.
+    it('reports a BYPASS and caches nothing when Redis is unreachable', async () => {
+      await create({ title: 'Uncached' });
+      jest.spyOn(cache, 'version').mockResolvedValue(undefined);
+
+      const result = await service.findAllWithCacheInfo();
+
+      expect(result.cache).toEqual({
+        status: 'BYPASS',
+        key: null,
+        ageSeconds: null,
+      });
+      expect(pageKeys(cache)).toEqual([]);
+      expect(result.page.items).toHaveLength(1);
+    });
+
+    it('treats an entry written by an older build as a miss', async () => {
+      await create({ title: 'Legacy' });
+      const key = (await service.findAllWithCacheInfo()).cache.key as string;
+      // The pre-envelope shape: a bare page carrying no cachedAt.
+      await cache.set(key, { items: [], meta: { total: 0 } }, 60);
+
+      const result = await service.findAllWithCacheInfo();
+
+      expect(result.cache.status).toBe('MISS');
+      expect(result.page.items).toHaveLength(1);
+    });
+
+    // Each of these once left a cached page readable, so the list went on
+    // serving a snapshot taken before the write.
+    it('reflects a newly created task in an already-cached list', async () => {
+      await create({ title: 'First' });
+      await service.findAll();
+
+      await create({ title: 'Second' });
+
+      expect((await service.findAll()).meta.total).toBe(2);
+    });
+
+    it('reflects an update in an already-cached list', async () => {
+      const created = await create({ title: 'Before' });
+      await service.findAll();
+
+      await service.update(created.id, { title: 'After' });
+
+      expect((await service.findAll()).items[0].title).toBe('After');
+    });
+
+    it('reflects a delete in an already-cached list', async () => {
+      const created = await create();
+      await service.findAll();
+
+      await service.remove(created.id);
+
+      expect((await service.findAll()).meta.total).toBe(0);
+    });
+
+    it('invalidates every cached query variant, not just the default one', async () => {
+      await create({ title: 'First' });
+      await service.findAll();
+      await service.findAll({ page: 1, limit: 5 });
+
+      await create({ title: 'Second' });
+
+      expect((await service.findAll()).meta.total).toBe(2);
+      expect((await service.findAll({ page: 1, limit: 5 })).meta.total).toBe(2);
+    });
+
+    // repository.clear() truncates without touching the cache, so callers
+    // reset through the service instead.
+    it('reflects a service-level clear in an already-cached list', async () => {
+      await create();
+      await service.findAll();
+
+      await service.clear();
+
+      expect((await service.findAll()).meta.total).toBe(0);
+    });
+  });
+
   describe('repository contract', () => {
     it('clears every task', async () => {
       await create();
@@ -465,7 +606,7 @@ describe('TasksService', () => {
 
       await repository.clear();
 
-      expect((await service.findAll()).meta.total).toBe(0);
+      expect(await repository.findAll()).toEqual([]);
     });
 
     it('reports no result when updating an unknown id', async () => {
@@ -493,3 +634,66 @@ describe('TasksService', () => {
     expect(stored.tags).toEqual(['api']);
   });
 });
+
+// The flag is read once at construction, so this needs its own module.
+describe('TasksService with invalidation broken', () => {
+  let service: TasksService;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        TasksService,
+        { provide: TasksRepository, useClass: InMemoryTasksRepository },
+        { provide: CacheService, useClass: InMemoryCacheService },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === BREAK_INVALIDATION_ENV ? 'true' : undefined,
+          },
+        },
+      ],
+    }).compile();
+
+    service = module.get(TasksService);
+  });
+
+  const create = (title: string) => service.create({ title } as CreateTaskDto);
+
+  it('reports that invalidation is switched off', () => {
+    expect(service.cacheInvalidationEnabled).toBe(false);
+  });
+
+  // The bug the switch reproduces: the write reaches the repository, but the
+  // page cached before it stays readable, so the list denies the row exists.
+  it('keeps serving a cached list that predates a created task', async () => {
+    await create('First');
+    expect((await service.findAllWithCacheInfo()).cache.status).toBe('MISS');
+
+    await create('Second');
+    const after = await service.findAllWithCacheInfo();
+
+    expect(after.cache.status).toBe('HIT');
+    expect(after.page.items.map((task) => task.title)).toEqual(['First']);
+    expect(after.page.meta.total).toBe(1);
+
+    // Stats read straight through, so only the list is out of date.
+    expect((await service.getStats()).total).toBe(2);
+  });
+
+  it('still retires cached pages on clear, so fixtures are not inherited', async () => {
+    await create('First');
+    await service.findAll();
+
+    await service.clear();
+    const result = await service.findAllWithCacheInfo();
+
+    expect(result.cache.status).toBe('MISS');
+    expect(result.page.items).toEqual([]);
+  });
+});
+
+/** Cached list pages only -- never the namespace counter. */
+function pageKeys(cache: InMemoryCacheService): string[] {
+  return cache.keys().filter((key) => /^tasks:list:v\d+:/.test(key));
+}

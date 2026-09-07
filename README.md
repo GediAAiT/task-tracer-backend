@@ -50,6 +50,16 @@ Create a `.env` file and point it at a PostgreSQL 18 instance:
 The `tasks` table (and its enum types) are created automatically on boot via TypeORM's `synchronize` option —
 no migration step needed for local development.
 
+Redis backs the list-endpoint cache (see [Caching](#caching)). It is optional — the API runs without it, just
+without the cache:
+
+| Variable         | Default     | Description                                     |
+| ---------------- | ----------- | ----------------------------------------------- |
+| `REDIS_HOST`     | `localhost` | Redis host                                      |
+| `REDIS_PORT`     | `6379`      | Redis port                                      |
+| `REDIS_PASSWORD` | —           | Redis password; omit when the server allows none |
+| `REDIS_DB`       | `0`         | Redis logical database index                     |
+
 ## Compile and run the project
 
 ```bash
@@ -67,22 +77,33 @@ The API listens on `http://localhost:3000` by default; set `PORT` to change it.
 
 ## Docker
 
-With `.env` in place (`DB_PASSWORD` must be set), bring up the API and PostgreSQL together:
+With `.env` in place (`DB_PASSWORD` must be set), bring up the API, PostgreSQL and Redis together:
 
 ```bash
 docker compose up --build
 ```
 
-Compose waits for Postgres' healthcheck before booting the API, which then creates the schema via TypeORM's
-`synchronize`. Data lives in the `postgres-data` volume and survives `docker compose down` (add `-v` to wipe it).
+Compose waits for the Postgres and Redis healthchecks before booting the API, which then creates the schema
+via TypeORM's `synchronize`. Data lives in the `postgres-data` volume and survives `docker compose down`
+(add `-v` to wipe it). Redis is cache-only: persistence is disabled and it runs under a 256 MB `allkeys-lru`
+bound, so losing it costs nothing but a few cold reads.
 
-The API container reads `.env` directly, but overrides `DB_HOST`/`DB_PORT` to reach Postgres over the compose
-network — so those two values in `.env` only apply when running outside Docker. Set `API_PORT` or
-`DB_PORT_HOST` in `.env` if 3000 or 5432 are already taken on your machine.
+The API container reads `.env` directly, but overrides `DB_HOST`/`DB_PORT` and `REDIS_HOST`/`REDIS_PORT` to
+reach Postgres and Redis over the compose network — so those values in `.env` only apply when running outside
+Docker. Set `API_PORT`, `DB_PORT_HOST` or `REDIS_PORT_HOST` in `.env` if 3000, 5432 or 6379 are already taken
+on your machine.
+
+Running the API on the host while keeping its dependencies in containers:
+
+```bash
+docker compose up -d postgres redis
+pnpm start:dev
+```
 
 ```bash
 docker compose logs -f api      # follow the API logs
 docker compose exec postgres psql -U postgres task_tracer_backend_db
+docker compose exec redis redis-cli KEYS 'tasks:*'   # inspect cached pages
 docker compose down             # stop; add -v to also drop the database volume
 ```
 
@@ -95,6 +116,48 @@ docker run --rm -p 3000:3000 --env-file .env task-tracer-backend
 
 The build is multi-stage: dependencies and `tsc` run in builder stages, and the final image carries only
 `dist/`, production dependencies and `package.json`, running as the unprivileged `node` user.
+
+## Caching
+
+`GET /tasks` is cached in Redis for 60 seconds. Cold reads hit Postgres and filter, sort and paginate in the
+service; warm reads are served straight from Redis.
+
+Filters, sorting and pagination all change the response, so all of them are part of the cache key. That means
+one set of rows fans out across as many keys as there are query combinations clients ask for:
+
+```
+tasks:list:v4:limit=5&page=1&sortBy=createdAt&sortOrder=desc
+tasks:list:v4:limit=5&page=1&sortBy=createdAt&sortOrder=desc&status=TODO
+tasks:list:v4:limit=10&page=1&sortBy=title&sortOrder=asc
+```
+
+### Invalidating it
+
+A single `POST /tasks` can change every one of those pages, and the key space is unbounded, so a write cannot
+enumerate the keys it would have to delete. Sweeping them is no better: `KEYS` blocks the server, and `SCAN`
+races against concurrent writers.
+
+Instead the keys are namespaced by a generation counter, `tasks:list-version`. Every write — create, update,
+delete — does one `INCR`. Readers build their key from the current counter, so the entire previous generation
+becomes unreachable in a single atomic operation and is reclaimed by its own TTL. Invalidation is O(1) and
+costs one round trip regardless of how many pages are cached.
+
+The tradeoff is that retired pages linger in memory until their TTL expires rather than being freed on the
+write. The 60 second TTL and the `allkeys-lru` bound on the Redis container keep that bounded.
+
+The counter deliberately sits outside the `tasks:list:` prefix that pages use, so a prefix scan over cached
+pages can never pick up the counter itself.
+
+### When Redis is down
+
+The cache is an optimisation, never a correctness or availability dependency. Every `CacheService` method
+fails open: a Redis outage is logged as a warning and the request is served from Postgres. Because a reader
+that cannot read the counter cannot know which generation an entry belongs to, it skips the cache entirely
+rather than risk serving another generation's page. Writes still succeed; the cache simply repopulates once
+Redis is reachable again.
+
+The one gap worth naming: if a write commits and its `INCR` then fails, cached pages stay stale until their
+TTL expires. Bounding that is what the TTL is for — the cache is never the source of truth.
 
 ## API documentation
 
@@ -111,7 +174,7 @@ With the app running:
 | Method   | Path           | Description                                                   |
 | -------- | -------------- | ------------------------------------------------------------- |
 | `POST`   | `/tasks`       | Create a task                                                 |
-| `GET`    | `/tasks`       | List tasks — filtered, sorted, paginated                      |
+| `GET`    | `/tasks`       | List tasks — filtered, sorted, paginated (cached, see [Caching](#caching)) |
 | `GET`    | `/tasks/stats` | Counts by status and priority, overdue count, completion rate |
 | `GET`    | `/tasks/:id`   | Fetch one task                                                |
 | `PATCH`  | `/tasks/:id`   | Update the fields present in the body                         |

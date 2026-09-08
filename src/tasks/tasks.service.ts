@@ -173,14 +173,14 @@ export class TasksService {
     if (dto.assignee !== undefined) patch.assignee = dto.assignee;
     if (dto.tags !== undefined) patch.tags = normalizeTags(dto.tags);
     if (dto.dueDate !== undefined)
-      patch.dueDate = new Date(dto.dueDate).toISOString();
+      patch.dueDate =
+        dto.dueDate === null ? null : new Date(dto.dueDate).toISOString();
 
     if (dto.status !== undefined && dto.status !== existing.status) {
       patch.status = dto.status;
       patch.completedAt =
         dto.status === TaskStatus.DONE ? new Date().toISOString() : null;
     }
-
 
     const updated = (await this.repository.update(id, patch)) as Task;
 
@@ -197,12 +197,8 @@ export class TasksService {
     await this.invalidateLists();
   }
 
-  /** Removes every task, cache included. Test and fixture setup only. */
   async clear(): Promise<void> {
     await this.repository.clear();
-    // Bumps unconditionally, even with the break switch on: this is fixture
-    // setup, and a test inheriting the previous test's cached rows would fail
-    // for reasons unrelated to what it asserts.
     await this.cache.bumpVersion(TASKS_LIST_VERSION_KEY);
   }
 
@@ -293,7 +289,6 @@ function comparator(sortBy: TaskSortBy, sortOrder: SortOrder) {
         const left = a.dueDate ? new Date(a.dueDate).getTime() : NO_DUE_DATE;
         const right = b.dueDate ? new Date(b.dueDate).getTime() : NO_DUE_DATE;
         if (left === right) result = 0;
-
         else if (left === NO_DUE_DATE) return 1;
         else if (right === NO_DUE_DATE) return -1;
         else result = left - right;
@@ -305,7 +300,6 @@ function comparator(sortBy: TaskSortBy, sortOrder: SortOrder) {
       default:
         result = Date.parse(a.createdAt) - Date.parse(b.createdAt);
     }
-
 
     return (result || a.id.localeCompare(b.id)) * direction;
   };

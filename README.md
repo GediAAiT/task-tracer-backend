@@ -18,9 +18,6 @@
     <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
   <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
 </p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
-
 ## Description
 
 **Task Tracer** — a task tracking REST API built with [NestJS](https://github.com/nestjs/nest), documented with
@@ -53,10 +50,10 @@ no migration step needed for local development.
 Redis backs the list-endpoint cache (see [Caching](#caching)). It is optional — the API runs without it, just
 without the cache:
 
-| Variable         | Default     | Description                                     |
-| ---------------- | ----------- | ----------------------------------------------- |
-| `REDIS_HOST`     | `localhost` | Redis host                                      |
-| `REDIS_PORT`     | `6379`      | Redis port                                      |
+| Variable         | Default     | Description                                      |
+| ---------------- | ----------- | ------------------------------------------------ |
+| `REDIS_HOST`     | `localhost` | Redis host                                       |
+| `REDIS_PORT`     | `6379`      | Redis port                                       |
 | `REDIS_PASSWORD` | —           | Redis password; omit when the server allows none |
 | `REDIS_DB`       | `0`         | Redis logical database index                     |
 
@@ -159,6 +156,61 @@ Redis is reachable again.
 The one gap worth naming: if a write commits and its `INCR` then fails, cached pages stay stale until their
 TTL expires. Bounding that is what the TTL is for — the cache is never the source of truth.
 
+### Telling clients which source answered
+
+A cached page and a freshly computed one are identical in the body, so `GET /tasks` reports the decision in
+response headers instead of leaving clients to infer it:
+
+| Header                 | Value                                                              |
+| ---------------------- | ------------------------------------------------------------------ |
+| `X-Cache`              | `HIT`, `MISS`, or `BYPASS` when Redis could not be reached         |
+| `X-Cache-Key`          | the key the page was read from or written to; absent on a bypass   |
+| `X-Cache-Age`          | seconds since the returned page was computed (`0` on a miss)       |
+| `X-Cache-Invalidation` | `enabled`, or `disabled` when writes are not retiring cached pages |
+
+The age is why cached pages are stored wrapped in `{ cachedAt, page }` rather than as a bare page: a Redis TTL
+answers "how much longer", not "since when", and the age is the number that makes a stale read visible.
+Entries written by a build that predates the envelope are rejected by `isCachedListPage` and treated as a
+miss, so a deploy cannot serve a page with no rows.
+
+`enableCors` names all four in `exposedHeaders`. Browsers hide every non-safelisted response header from
+scripts otherwise, so a direct (non-proxied) client could not read them.
+
+### Breaking invalidation on purpose
+
+`TASKS_CACHE_BREAK_INVALIDATION=true` stops writes from bumping the generation counter. It exists to
+reproduce the stale-read bug the counter prevents, and it logs a warning at startup. Never enable it in
+production.
+
+`TasksService.clear()` bumps unconditionally even with the switch on. It is fixture setup, and a test
+inheriting the previous test's cached rows would fail for reasons unrelated to what it asserts.
+
+To watch the list go stale:
+
+```bash
+# 1. turn the switch on and restart
+TASKS_CACHE_BREAK_INVALIDATION=true docker compose up -d api
+
+# 2. warm the cache -- the second read is a HIT
+curl -sD - -o /dev/null 'http://localhost:3000/tasks?limit=5'
+curl -sD - -o /dev/null 'http://localhost:3000/tasks?limit=5'
+
+# 3. create a task
+curl -s -XPOST http://localhost:3000/tasks -H 'Content-Type: application/json' \
+  -d '{"title":"you will not see me"}'
+
+# 4. read again: still a HIT on the same key, and the new task is missing
+curl -s 'http://localhost:3000/tasks?limit=5'
+
+# 5. but the row is really there -- stats are not cached
+curl -s http://localhost:3000/tasks/stats
+```
+
+What you should see at step 4: `X-Cache: HIT`, the same `X-Cache-Key` as step 2, an unchanged
+`tasks:list-version`, and a `meta.total` that does not count the task you just created. The list recovers on
+its own once the 60 second TTL expires, which is the bound on how wrong it can get. Turn the switch back off
+and repeat: step 4 becomes a `MISS` on a `v`-incremented key and the new task appears immediately.
+
 ## API documentation
 
 With the app running:
@@ -167,19 +219,18 @@ With the app running:
 | ------------ | ----------------------------------- |
 | Swagger UI   | http://localhost:3000/api/docs      |
 | OpenAPI JSON | http://localhost:3000/api/docs-json |
-| OpenAPI YAML | http://localhost:3000/api/docs-yaml |
 
 ### Endpoints
 
-| Method   | Path           | Description                                                   |
-| -------- | -------------- | ------------------------------------------------------------- |
-| `POST`   | `/tasks`       | Create a task                                                 |
+| Method   | Path           | Description                                                                |
+| -------- | -------------- | -------------------------------------------------------------------------- |
+| `POST`   | `/tasks`       | Create a task                                                              |
 | `GET`    | `/tasks`       | List tasks — filtered, sorted, paginated (cached, see [Caching](#caching)) |
-| `GET`    | `/tasks/stats` | Counts by status and priority, overdue count, completion rate |
-| `GET`    | `/tasks/:id`   | Fetch one task                                                |
-| `PATCH`  | `/tasks/:id`   | Update the fields present in the body                         |
-| `DELETE` | `/tasks/:id`   | Delete a task (`204`)                                         |
-| `GET`    | `/health`      | Liveness probe                                                |
+| `GET`    | `/tasks/stats` | Counts by status and priority, overdue count, completion rate              |
+| `GET`    | `/tasks/:id`   | Fetch one task                                                             |
+| `PATCH`  | `/tasks/:id`   | Update the fields present in the body                                      |
+| `DELETE` | `/tasks/:id`   | Delete a task (`204`)                                                      |
+| `GET`    | `/health`      | Liveness probe                                                             |
 
 ### The task model
 

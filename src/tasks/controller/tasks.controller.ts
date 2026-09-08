@@ -15,6 +15,7 @@ import {
 import type { Response } from 'express';
 import {
   ApiBadRequestResponse,
+  ApiConsumes,
   ApiCreatedResponse,
   ApiNoContentResponse,
   ApiNotFoundResponse,
@@ -32,6 +33,11 @@ import { Task } from '../entities/task.entity';
 import { CACHE_HEADERS } from '../tasks.cache';
 import { TasksService } from '../tasks.service';
 
+const BODY_CONTENT_TYPES = [
+  'application/json',
+  'application/x-www-form-urlencoded',
+];
+
 @ApiTags('tasks')
 @ApiBadRequestResponse({ type: ErrorResponseDto })
 @Controller('tasks')
@@ -39,6 +45,7 @@ export class TasksController {
   constructor(private readonly tasksService: TasksService) {}
 
   @Post()
+  @ApiConsumes(...BODY_CONTENT_TYPES)
   @ApiCreatedResponse({ type: Task })
   async create(@Body() createTaskDto: CreateTaskDto): Promise<Task> {
     return this.tasksService.create(createTaskDto);
@@ -72,8 +79,6 @@ export class TasksController {
   ): Promise<PaginatedTasksDto> {
     const { page, cache } = await this.tasksService.findAllWithCacheInfo(query);
 
-    // A cached page and a fresh one look identical in the body, so the source
-    // is reported in headers rather than left for the client to guess.
     response.setHeader(CACHE_HEADERS.status, cache.status);
     response.setHeader(
       CACHE_HEADERS.invalidation,
@@ -102,6 +107,7 @@ export class TasksController {
   }
 
   @Patch(':id')
+  @ApiConsumes(...BODY_CONTENT_TYPES)
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ type: Task })
   @ApiNotFoundResponse({ type: ErrorResponseDto })

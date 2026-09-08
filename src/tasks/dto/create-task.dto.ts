@@ -69,7 +69,7 @@ export class CreateTaskDto {
   @ApiPropertyOptional({
     description: 'Person responsible for the task',
     maxLength: 120,
-    example: 'alex@example.com',
+    example: 'string@examplw.com',
   })
   @Transform(blankToUndefined)
   @IsOptional()

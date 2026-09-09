@@ -1,16 +1,20 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Redis } from 'ioredis';
+import { MemoryCacheStore } from './memory-cache.store';
 import { REDIS_CLIENT } from './redis.constants';
 
 @Injectable()
 export class CacheService {
   private readonly logger = new Logger(CacheService.name);
 
-  constructor(@Inject(REDIS_CLIENT) private readonly client: Redis) {}
+  private readonly memory = new MemoryCacheStore();
+
+  constructor(@Inject(REDIS_CLIENT) private readonly client: Redis | null) {}
 
   async get<T>(key: string): Promise<T | undefined> {
+    const redis = this.redis();
     try {
-      const raw = await this.client.get(key);
+      const raw = redis ? await redis.get(key) : this.memory.get(key);
       return raw === null ? undefined : (JSON.parse(raw) as T);
     } catch (error) {
       this.logger.warn(`get(${key}) failed: ${describe(error)}`);
@@ -19,17 +23,19 @@ export class CacheService {
   }
 
   async set(key: string, value: unknown, ttlSeconds: number): Promise<void> {
+    const redis = this.redis();
     try {
-      await this.client.set(key, JSON.stringify(value), 'EX', ttlSeconds);
+      const raw = JSON.stringify(value);
+      if (redis) await redis.set(key, raw, 'EX', ttlSeconds);
+      else this.memory.set(key, raw, ttlSeconds);
     } catch (error) {
       this.logger.warn(`set(${key}) failed: ${describe(error)}`);
     }
-  }
-
-  /** 0 when unset, undefined when Redis is unreachable. */
+  } 
   async version(key: string): Promise<number | undefined> {
+    const redis = this.redis();
     try {
-      const raw = await this.client.get(key);
+      const raw = redis ? await redis.get(key) : this.memory.get(key);
       if (raw === null) return 0;
       const parsed = Number(raw);
       return Number.isFinite(parsed) ? parsed : 0;
@@ -40,8 +46,11 @@ export class CacheService {
   }
 
   async bumpVersion(key: string): Promise<void> {
+    this.memory.incr(key);
+    const redis = this.redis();
+    if (!redis) return;
     try {
-      await this.client.incr(key);
+      await redis.incr(key);
     } catch (error) {
       this.logger.warn(`bumpVersion(${key}) failed: ${describe(error)}`);
     }
@@ -49,11 +58,18 @@ export class CacheService {
 
   async del(...keys: string[]): Promise<void> {
     if (keys.length === 0) return;
+    this.memory.del(keys);
+    const redis = this.redis();
+    if (!redis) return;
     try {
-      await this.client.del(...keys);
+      await redis.del(...keys);
     } catch (error) {
       this.logger.warn(`del(${keys.join(', ')}) failed: ${describe(error)}`);
     }
+  }
+
+  private redis(): Redis | null {
+    return this.client?.status === 'ready' ? this.client : null;
   }
 }
 

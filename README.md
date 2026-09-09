@@ -36,26 +36,62 @@ pnpm install
 
 Create a `.env` file and point it at a PostgreSQL 18 instance:
 
-| Variable      | Default                  | Description                                                              |
-| ------------- | ------------------------ | ------------------------------------------------------------------------ |
-| `DB_HOST`     | `localhost`              | Postgres host                                                            |
-| `DB_PORT`     | `5432`                   | Postgres port                                                            |
-| `DB_USERNAME` | `postgres`               | Postgres user                                                            |
-| `DB_PASSWORD` | —                        | Postgres password                                                        |
-| `DB_DATABASE` | `task_tracer_backend_db` | Database name — create it beforehand (`createdb task_tracer_backend_db`) |
+| Variable       | Default                  | Description                                                              |
+| -------------- | ------------------------ | ------------------------------------------------------------------------ |
+| `DB_HOST`      | `localhost`              | Postgres host                                                            |
+| `DB_PORT`      | `5432`                   | Postgres port                                                            |
+| `DB_PORT_HOST` | `5433`                   | Host port compose publishes the postgres container on                    |
+| `DB_USERNAME`  | `postgres`               | Postgres user                                                            |
+| `DB_PASSWORD`  | `postgres`               | Postgres password — set your real one in `.env`                          |
+| `DB_DATABASE`  | `task_tracer_backend_db` | Database name — create it beforehand (`createdb task_tracer_backend_db`) |
 
 The `tasks` table (and its enum types) are created automatically on boot via TypeORM's `synchronize` option —
 no migration step needed for local development.
 
-Redis backs the list-endpoint cache (see [Caching](#caching)). It is optional — the API runs without it, just
-without the cache:
+`DB_PASSWORD` is the one value with no useful default: whatever you put in `.env` is what the API connects
+with, and it is also what compose creates the postgres container's superuser with, so the two always agree.
+The `postgres` fallback exists only so a fresh clone can `docker compose up` before anyone has written a
+`.env`; a host-side run without one fails fast with `DB_PASSWORD is not set` rather than guessing.
 
-| Variable         | Default     | Description                                      |
-| ---------------- | ----------- | ------------------------------------------------ |
-| `REDIS_HOST`     | `localhost` | Redis host                                       |
-| `REDIS_PORT`     | `6379`      | Redis port                                       |
-| `REDIS_PASSWORD` | —           | Redis password; omit when the server allows none |
-| `REDIS_DB`       | `0`         | Redis logical database index                     |
+Postgres is resolved the same Docker-first way as Redis (see [Caching](#caching) for the reasoning):
+
+1. `localhost:DB_PORT_HOST` — the postgres container compose publishes, when Docker is up.
+2. `DB_HOST:DB_PORT` — a Postgres installed on the machine, when Docker is not running.
+
+`DB_PORT_HOST` defaults to `5433`, not `5432`, so the container can publish a port even while a local
+Postgres already owns 5432. Note the difference from the cache: these are two _different databases_ with
+different rows, not two routes to one store. Pin `DB_HOST`/`DB_PORT` and set `DB_PORT_HOST` equal to
+`DB_PORT` to switch the probing off and always use exactly what you configured.
+
+Redis backs the list-endpoint cache (see [Caching](#caching)). It is optional — with no Redis reachable the
+API caches in its own process instead, so `GET /tasks` is cached whether or not Docker is running:
+
+| Variable          | Default     | Description                                               |
+| ----------------- | ----------- | --------------------------------------------------------- |
+| `REDIS_HOST`      | `localhost` | Redis host                                                |
+| `REDIS_PORT`      | `6379`      | Redis port                                                |
+| `REDIS_PORT_HOST` | `6380`      | Host port compose publishes the redis container on        |
+| `REDIS_PASSWORD`  | —           | Redis password; omit when the server allows none          |
+| `REDIS_DB`        | `0`         | Redis logical database index                              |
+| `CACHE_DRIVER`    | `auto`      | `auto`, `redis` (never fall back), or `memory` (no Redis) |
+
+`auto` is the mode to leave set for local runs. It picks a store once at boot, in this order:
+
+1. `localhost:REDIS_PORT_HOST` — the Redis compose publishes, so Docker's container wins whenever it is up.
+2. `REDIS_HOST:REDIS_PORT` — a Redis installed on the machine, used when Docker is not running.
+3. the in-process cache — no Redis at all; `GET /tasks` is still cached, it just lives in the API process.
+
+Docker comes first so that a host-side `pnpm start:dev` shares the same cache the API container uses instead
+of running a second, divergent one. Only steps 1 and 2 are probed when `REDIS_HOST` is local — a remote host
+is used as given. Whichever endpoint wins keeps retrying for the life of the process, so a Redis restart
+reconnects rather than stranding the app on the in-process store.
+
+Compose sets `redis` for the API container so a missing Redis is an error in the log rather than a silent
+downgrade; the API stays up and caches in process until Redis reconnects. `memory` skips Redis entirely.
+
+All of this is driven by `.env`, which documents the same order inline. There is nothing to copy from
+`.env.example` first: every variable has a working default, so a fresh clone runs `docker compose up --build`
+as-is and `.env` is only needed to override something.
 
 ## Compile and run the project
 
@@ -82,8 +118,8 @@ docker compose up --build
 
 Compose waits for the Postgres and Redis healthchecks before booting the API, which then creates the schema
 via TypeORM's `synchronize`. Data lives in the `postgres-data` volume and survives `docker compose down`
-(add `-v` to wipe it). Redis is cache-only: persistence is disabled and it runs under a 256 MB `allkeys-lru`
-bound, so losing it costs nothing but a few cold reads.
+(add `-v` to wipe it). Redis appends to the `redis-data` volume so cached pages survive a restart, under a
+256 MB `allkeys-lru` bound; losing it costs nothing but a few cold reads.
 
 The API container reads `.env` directly, but overrides `DB_HOST`/`DB_PORT` and `REDIS_HOST`/`REDIS_PORT` to
 reach Postgres and Redis over the compose network — so those values in `.env` only apply when running outside
@@ -96,6 +132,9 @@ Running the API on the host while keeping its dependencies in containers:
 docker compose up -d postgres redis
 pnpm start:dev
 ```
+
+With no containers at all, `pnpm start:dev` against a local Postgres still caches — the in-process store takes
+over, and the `X-Cache` headers below read the same way.
 
 ```bash
 docker compose logs -f api      # follow the API logs
@@ -116,8 +155,14 @@ The build is multi-stage: dependencies and `tsc` run in builder stages, and the 
 
 ## Caching
 
-`GET /tasks` is cached in Redis for 60 seconds. Cold reads hit Postgres and filter, sort and paginate in the
-service; warm reads are served straight from Redis.
+`GET /tasks` is cached for 90 days (`TASKS_LIST_TTL_SECONDS`). Cold reads hit Postgres and filter, sort and
+paginate in the service; warm reads are served straight from the cache. When the 90 days are up the entry is
+dropped and the next read recomputes the page and caches it again for another 90 days.
+
+The store is Redis when it is reachable and an in-process `MemoryCacheStore` otherwise, chosen by
+`CACHE_DRIVER`. Both hold the same keys with the same TTL; the in-process one expires entries lazily on read
+and is capped at 1000 keys, evicting the oldest expiring key first so the generation counter is never the one
+thrown away.
 
 Filters, sorting and pagination all change the response, so all of them are part of the cache key. That means
 one set of rows fans out across as many keys as there are query combinations clients ask for:
@@ -140,7 +185,8 @@ becomes unreachable in a single atomic operation and is reclaimed by its own TTL
 costs one round trip regardless of how many pages are cached.
 
 The tradeoff is that retired pages linger in memory until their TTL expires rather than being freed on the
-write. The 60 second TTL and the `allkeys-lru` bound on the Redis container keep that bounded.
+write. With a 90 day TTL the `allkeys-lru` bound on the Redis container — and the key cap on the in-process
+store — are what keep that bounded.
 
 The counter deliberately sits outside the `tasks:list:` prefix that pages use, so a prefix scan over cached
 pages can never pick up the counter itself.
@@ -148,10 +194,11 @@ pages can never pick up the counter itself.
 ### When Redis is down
 
 The cache is an optimisation, never a correctness or availability dependency. Every `CacheService` method
-fails open: a Redis outage is logged as a warning and the request is served from Postgres. Because a reader
-that cannot read the counter cannot know which generation an entry belongs to, it skips the cache entirely
-rather than risk serving another generation's page. Writes still succeed; the cache simply repopulates once
-Redis is reachable again.
+fails open: a Redis outage is logged as a warning and reads move to the in-process store, which starts cold
+and repopulates from Postgres. Writes bump the generation counter in both stores, so pages cached in process
+during an earlier outage can never be served against a newer generation. If even the active store throws, the
+reader cannot tell which generation an entry belongs to, so it skips the cache entirely and answers from
+Postgres. The cache returns to Redis on its own once Redis is reachable again.
 
 The one gap worth naming: if a write commits and its `INCR` then fails, cached pages stay stale until their
 TTL expires. Bounding that is what the TTL is for — the cache is never the source of truth.
@@ -163,7 +210,7 @@ response headers instead of leaving clients to infer it:
 
 | Header                 | Value                                                              |
 | ---------------------- | ------------------------------------------------------------------ |
-| `X-Cache`              | `HIT`, `MISS`, or `BYPASS` when Redis could not be reached         |
+| `X-Cache`              | `HIT`, `MISS`, or `BYPASS` when no cache store could be read       |
 | `X-Cache-Key`          | the key the page was read from or written to; absent on a bypass   |
 | `X-Cache-Age`          | seconds since the returned page was computed (`0` on a miss)       |
 | `X-Cache-Invalidation` | `enabled`, or `disabled` when writes are not retiring cached pages |
@@ -208,29 +255,15 @@ curl -s http://localhost:3000/tasks/stats
 
 What you should see at step 4: `X-Cache: HIT`, the same `X-Cache-Key` as step 2, an unchanged
 `tasks:list-version`, and a `meta.total` that does not count the task you just created. The list recovers on
-its own once the 60 second TTL expires, which is the bound on how wrong it can get. Turn the switch back off
+its own once the TTL expires, which is the bound on how wrong it can get. Turn the switch back off
 and repeat: step 4 becomes a `MISS` on a `v`-incremented key and the new task appears immediately.
 
 ## API documentation
 
 With the app running:
 
-| What         | URL                                 |
-| ------------ | ----------------------------------- |
-| Swagger UI   | http://localhost:3000/api/docs      |
-| OpenAPI JSON | http://localhost:3000/api/docs-json |
-
-### Endpoints
-
-| Method   | Path           | Description                                                                |
-| -------- | -------------- | -------------------------------------------------------------------------- |
-| `POST`   | `/tasks`       | Create a task                                                              |
-| `GET`    | `/tasks`       | List tasks — filtered, sorted, paginated (cached, see [Caching](#caching)) |
-| `GET`    | `/tasks/stats` | Counts by status and priority, overdue count, completion rate              |
-| `GET`    | `/tasks/:id`   | Fetch one task                                                             |
-| `PATCH`  | `/tasks/:id`   | Update the fields present in the body                                      |
-| `DELETE` | `/tasks/:id`   | Delete a task (`204`)                                                      |
-| `GET`    | `/health`      | Liveness probe                                                             |
+Swagger UI | http://localhost:3000/api/docs  
+OpenAPI JSON | http://localhost:3000/api/docs-json |
 
 ### The task model
 

@@ -4,10 +4,10 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USERNAME:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
       POSTGRES_DB: ${DB_DATABASE:-task_tracer_backend_db}
     ports:
-      - '${DB_PORT_HOST:-5432}:5432'
+      - '${DB_PORT_HOST:-5433}:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -27,17 +27,17 @@ services:
     command:
       [
         'redis-server',
-        '--save',
-        '',
         '--appendonly',
-        'no',
+        'yes',
         '--maxmemory',
         '256mb',
         '--maxmemory-policy',
         'allkeys-lru',
       ]
     ports:
-      - '${REDIS_PORT_HOST:-6379}:6379'
+      - '${REDIS_PORT_HOST:-6380}:6379'
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
@@ -49,12 +49,21 @@ services:
     build: .
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      # A fresh clone has no .env: the defaults below are enough to boot.
+      - path: .env
+        required: false
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
+      # Repeated from .env so the API and Postgres agree on the credentials
+      # even when there is no .env to read them from.
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_DATABASE: ${DB_DATABASE:-task_tracer_backend_db}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      CACHE_DRIVER: redis
       PORT: 3000
     ports:
       - '${API_PORT:-3000}:3000'
@@ -78,3 +87,4 @@ services:
 
 volumes:
   postgres-data:
+  redis-data:

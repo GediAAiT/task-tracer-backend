@@ -1,6 +1,6 @@
 import { PaginatedTasksDto } from './dto/paginated-tasks.dto';
 import { QueryTasksDto } from './dto/query-tasks.dto';
-export const TASKS_LIST_TTL_SECONDS = 60;
+export const TASKS_LIST_TTL_SECONDS = 60 * 60 * 24 * 90;
 
 export const TASKS_LIST_VERSION_KEY = 'tasks:list-version';
 

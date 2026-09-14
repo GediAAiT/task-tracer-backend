@@ -50,14 +50,11 @@ services:
     restart: unless-stopped
     init: true
     env_file:
-      # A fresh clone has no .env: the defaults below are enough to boot.
       - path: .env
         required: false
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
-      # Repeated from .env so the API and Postgres agree on the credentials
-      # even when there is no .env to read them from.
       DB_USERNAME: ${DB_USERNAME:-postgres}
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       DB_DATABASE: ${DB_DATABASE:-task_tracer_backend_db}
